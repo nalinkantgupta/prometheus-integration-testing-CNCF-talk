@@ -76,3 +76,12 @@ slack-cluster-alerts
 
 Prometheus Sample Routes Testing Done ✅
 ```
+
+## Kubectl workshop
+
+Reference:
+![alt text][logo]
+
+[logo]: https://github.com/adam-p/markdown-here/raw/master/src/common/images/icon48.png ""
+
+[Namespaces, Pods, Deployment, Scale, Secret, troubleshooting](https://github.com/nalinkantgupta/kubectl-workshop#k8-cli-workshop)
