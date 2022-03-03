@@ -2,6 +2,12 @@
 __pycache__/
 *.py[cod]
 *$py.class
+prometheus/prometheus_*
+prometheus/.history/
+prometheus/.history/
+*.history/
+
+
 
 # C extensions
 *.so

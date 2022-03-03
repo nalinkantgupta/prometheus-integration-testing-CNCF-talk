@@ -1,0 +1,487 @@
+serverFiles:
+  alerting_rules.yml:
+    groups:
+      - name: recording_rules
+        interval: 5s
+        rules:
+          - record: node_exporter:node_filesystem_free:fs_used_percents
+            expr: 100 - 100 * ( node_filesystem_free{mountpoint="/"} / node_filesystem_size{mountpoint="/"} )
+
+          - record: node_exporter:node_memory_free:memory_used_percents
+            expr: 100 - 100 * (node_memory_MemFree / node_memory_MemTotal)
+
+      - name: alerting_rules
+        rules:
+
+##  Container/Pod
+          - alert: ZeroReplicaDeployment
+            annotations:
+              summary: Deployment={{$labels.deployment}}, Namespace={{$labels.namespace}} is currently having {{ $value }} pods running
+            expr: |
+              sum(kube_deployment_status_replicas{pod_template_hash=""}) by (deployment,namespace)  < 1
+            for: 30m
+            labels:
+              component: deployment
+              pager: alert
+              alert_name: pod-alert
+
+          - alert: PodHighMemory>99
+            annotations:
+              summary: Container={{$labels.pod}}, in Namespace={{$labels.namespace}} is using more than 99% of Memory Limit
+            expr: |-
+              ((( sum(container_memory_usage_bytes{image!="",pod!="POD", namespace!="kube-system"}) by (namespace,container_name,pod)  / sum(container_spec_memory_limit_bytes{image!="",pod!="POD",namespace!="kube-system"}) by (namespace,container_name,pod) ) * 100 ) < +Inf ) > 99
+            for: 60m
+            labels:
+              component: pod
+              alert_name: pod-alert
+
+          - alert: PodHighCPU>95
+            annotations:
+              summary: Container={{$labels.container}} {{$labels.pod}} in Namespace={{$labels.namespace}} is using more than 95% of CPU Limit
+            expr: |-
+              ((sum(irate(container_cpu_usage_seconds_total{image!="",container_name!="POD", namespace!="kube-system"}[30s])) by (namespace,container_name,pod_name) / sum(container_spec_cpu_quota{image!="",container_name!="POD", namespace!="kube-system"} / container_spec_cpu_period{image!="",container_name!="POD", namespace!="kube-system"}) by (namespace,container_name,pod_name) ) * 100)  > 95
+            for: 15m
+            labels:
+              component: pod
+              alert_name: pod-alert
+
+          - alert: PodOOMKilled
+            expr: sum_over_time(kube_pod_container_status_terminated_reason{reason="OOMKilled"}[5m]) > 0
+            for: 5m
+            labels:
+              component: pod
+              alert_name: pod-alert
+            annotations:
+              summary: Pod={{$labels.pod}} in Namespace={{$labels.namespace}} is got OOMKilled
+
+
+          - alert: ContainerKilledLast60min        #  Docker containers : google/cAdvisor
+            expr: time() - container_last_seen > 60
+            for: 60m
+            labels:
+              component: pod
+              alert_name: pod-alert
+              pager: alert
+            annotations:
+              summary: Container killed{{ $value }}{{$labels.pod}}, Namespace={{$labels.namespace}}, (instance {{ $labels.instance }})
+
+          - alert: PodNotAbleToMount
+            annotations:
+              summary: Failed to Mount, Pod={{$labels.involved_object_name}} in Namespace={{$labels.namespace}} for 2mins
+            expr: sum(kube_event_unique_events_total{name!~"kube-proxy.*|pods-cleaner.*",reason="FailedMount"}) by (involved_object_name, namespace) > 0
+            for: 2m
+            labels:
+              component: pod
+              pager: alert
+              alert_name: pod-alert
+
+          - alert: PodNotAbleToSchedule
+            annotations:
+              summary: Failed to Schedule, Pod={{$labels.involved_object_name}} in Namespace={{$labels.namespace}} for 2mins
+            expr: sum(kube_event_unique_events_total{name!~"kube-proxy.*|pods-cleaner.*",reason="FailedScheduling",involved_object_kind="Pod"}) by (involved_object_name, namespace) > 0
+            for: 2m
+            labels:
+              component: pod
+              pager: alert
+              alert_name: pod-alert
+
+          - alert: ContainerVolumeUsage
+            annotations:
+              summary: Container Volume usage is above 80% VALUE = {{ $value }}, (name {{ $labels.container }})
+            expr: |-
+              (1 - (sum(container_fs_inodes_free{container!=""}) BY (instance, name, container) / sum(container_fs_inodes_total{container!=""})
+              BY (instance, name, container)) * 100) > 80
+            for: 30m
+            labels:
+              component: pod
+              alert_name: pod-alert
+
+          - alert: ContainerVolumeIoUsage
+            annotations:
+              summary: Container Volume IO usage is above 80% VALUE = {{ $value }}, (name {{ $labels.name }})
+            expr: (sum(container_fs_io_current{container!=""}) BY (instance, name, container) * 100) > 80
+            for: 30m
+            labels:
+              component: pod
+              alert_name: pod-alert
+
+          - alert: HostPersistentVolumeOutOfDiskSpace
+            annotations:
+              summary: PersistentVolume is 75% Full,PVC={{$labels.persistentvolumeclaim}}, Namespace={{$labels.namespace}}, Host={{$labels.kubernetes_io_hostname}}
+            expr: kubelet_volume_stats_available_bytes / kubelet_volume_stats_capacity_bytes * 100 < 25
+            for: 30m
+            labels:
+              component: volume
+              alert_name: pod-alert
+              pager: alert
+
+          - alert: HostVolumeFullInFourDays
+            annotations:
+              summary: "PersistentVolume will Full in 4 days with this speed , PVC={{$labels.persistentvolumeclaim}}, Namespace={{$labels.namespace}}, Host={{$labels.kubernetes_io_hostname}}"
+            expr: 100 * (kubelet_volume_stats_available_bytes / kubelet_volume_stats_capacity_bytes) < 15 and predict_linear(kubelet_volume_stats_available_bytes[6h], 4 * 24 * 3600) < 0
+            for: 30m
+            labels:
+              component: volume
+              alert_name: pod-alert
+              pager: alert
+
+## PV/PVC/Volumes
+          - alert: PersistentvolumeclaimPending
+            annotations:
+              summary: PVC in pening state, Namespace={{ $labels.namespace }},PersistentVolumeClaim {{ $labels.persistentvolumeclaim }}
+            expr: kube_persistentvolumeclaim_status_phase{phase="Pending"} == 1
+            for: 30m
+            labels:
+              component: volume
+              alert_name: pod-alert
+              pager: alert
+
+
+          - alert: StatefulsetDown
+            annotations:
+              summary: StatefulSet={{$labels.statefulset}} down in NameSpace={{ $labels.namespace}}
+            expr: (kube_statefulset_status_replicas_ready / kube_statefulset_status_replicas_current) != 1
+            for: 15m
+            labels:
+              component: pod
+              alert_name: pod-alert
+              pager: alert
+
+##  HPA
+          - alert: HpaScalingAbility
+            expr: kube_hpa_status_condition{status="false", condition="AbleToScale"} == 1
+            for: 30m
+            labels:
+              component: hpa
+              alert_name: pod-alert
+              pager: alert
+            annotations:
+              summary: "HPA={{$labels.hpa}} is unable to scale, Namespace={{$labels.namespace}}"
+
+          - alert: HPAMaxCapacityReach
+            annotations:
+              summary: "HPA={{$labels.hpa}} Max Capacity Reach  in Namespace={{$labels.namespace}}"
+            expr: |-
+              ((sum(kube_hpa_spec_max_replicas) by (hpa,namespace)) - (sum(kube_hpa_status_current_replicas) by (hpa,namespace))) == 0
+            for: 30m
+            labels:
+              component: hpa
+              alert_name: pod-alert
+              pager: alert
+
+          - alert: HpaScaleCapability
+            expr: kube_hpa_status_desired_replicas >= kube_hpa_spec_max_replicas
+            for: 30m
+            labels:
+              component: hpa
+              alert_name: pod-alert
+              pager: alert
+            annotations:
+              summary: "HPA={{$labels.hpa}} Above Max Capacity in Namespace={{$labels.namespace}}"
+
+# Blackbox : prometheus/blackbox_exporter
+
+          - alert: GKEBlackboxDown
+            expr: up{job=~"gke-blackbox-tcp"} == 0
+            for: 5m
+            labels:
+              component: gcp-blackbox-tcp
+              alert_name: blackbox-alert
+              pager: alert
+            annotations:
+              summary: "GKE TCP Connectivity lost => {{ $labels.instance }}, BlackBox={{ $labels.job}}"
+
+          - alert: AWSBlackboxDown
+            expr: up{job=~"aws-blackbox-tcp"} == 0
+            for: 5m
+            labels:
+              component: aws-blackbox-tcp
+              alert_name: blackbox-alert
+              pager: alert
+            annotations:
+              summary: "AWS TCP Connectivity lost => {{ $labels.instance }}, BlackBox={{ $labels.job}}"
+
+
+          - alert: BlackboxProbeHttpFailure
+            expr: probe_http_status_code <= 199 OR probe_http_status_code >= 400
+            for: 2m
+            labels:
+              component: http-failure
+              alert_name: blackbox-alert
+              pager: alert
+            annotations:
+              summary: "Blackbox HTTP failed=>{{ $labels.instance }},Status_Code={{ $value }}, and not 200-399"
+
+          - alert: BlackboxSslCertificateWillExpireSoon
+            expr: probe_ssl_earliest_cert_expiry - time() < 86400 * 3
+            for: 30m
+            labels:
+              component: sslcertificate
+              alert_name: blackbox-alert
+            annotations:
+              summary: "Blackbox SSL certificate will expire in 3 days, (instance {{ $labels.instance }})"
+
+          - alert: BlackboxSslCertificateExpired
+            expr: probe_ssl_earliest_cert_expiry - time() <= 0
+            for: 30m
+            labels:
+              component: sslcertificate
+              alert_name: blackbox-alert
+            annotations:
+              summary: "Blackbox SSL certificate expired Endpoint=>{{ $labels.instance }}, Type=>{{ $labels.job}}"
+
+          - alert: BlackboxSlowProbe
+            expr: avg_over_time(probe_duration_seconds[1m]) > 1
+            for: 30m
+            labels:
+              component: endpoint-slow
+              alert_name: blackbox-alert
+            annotations:
+              summary: "Endpoint=>{{ $labels.instance }} taking more then 1sec to respond,Type=>{{ $labels.job}}"
+
+          - alert: BlackboxProbeSlowHttp
+            expr: avg_over_time(probe_http_duration_seconds{phase="processing"}[1m]) > 0.5
+            for: 15m
+            labels:
+              component: endpoint-processing-slow
+              alert_name: blackbox-alert
+            annotations:
+              summary: "Endpoint=>{{ $labels.instance }} taking more then 0.5sec to proocess,Type=>{{ $labels.job}} "
+
+###   Prometheus
+          - alert: PrometheusTargetMissing
+            expr: up{job="prometheus"} == 0
+            for: 5m
+            labels:
+              component: prometheus
+              alert_name: prometheus-alert
+              pager: alert
+            annotations:
+              summary: "Prometheus Down has been down for more than 5 minutes."
+
+          - alert: PrometheusConfigurationReloadFailure
+            expr: prometheus_config_last_reload_successful != 1
+            for: 30m
+            labels:
+              component: prometheus
+              alert_name: prometheus-alert
+            annotations:
+              summary: "Prometheus configuration reload failure"
+
+          - alert: PrometheusNotConnectedToAlertmanager
+            expr: prometheus_notifications_alertmanagers_discovered < 1
+            for: 30m
+            labels:
+              component: prometheus
+              alert_name: prometheus-alert
+              pager: alert
+            annotations:
+              summary: "Prometheus server not able to connected to alertmanager"
+
+###   Host/Node
+          - alert: HostLoadAverage15m
+            expr: node_load15 >= 0.95
+            for: 30m
+            labels:
+              component: node
+              alert_name: cluster-health-alert
+            annotations:
+              summary: "Node={{ $labels.kubernetes_node }} - high load average {{ $value }} over 15 minutes"
+
+          - alert: HostMemoryFree10%For15m
+            expr: node_exporter:node_memory_free:memory_used_percents >= 90
+            for: 30m
+            labels:
+              component: node
+              alert_name: cluster-health-alert
+            annotations:
+              summary: "Node={{ $labels.kubernetes_node  }} has more than 90% of its memory used, Current={{ $value }}"
+
+          - alert: HostDiskSpace10%Free
+            expr: node_exporter:node_filesystem_free:fs_used_percents >= 90
+            for: 30m
+            labels:
+              component: node
+              alert_name: cluster-health-alert
+            annotations:
+              summary: "Node={{ $labels.kubernetes_node }} has only {{ $value }}% free disk space"
+
+          - alert: Host85%MemUsed
+            expr: node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes * 100 < 15
+            for: 30m
+            labels:
+              component: node
+              alert_name: cluster-health-alert
+              pager: alert
+            annotations:
+              summary: "Node={{ $labels.kubernetes_node }}, out of memory is filling up (< 15% left) , Current={{ $value }}"
+
+          - alert: Host40MBNetworkThroughputIn
+            expr: sum by (kubernetes_node) (irate(node_network_receive_bytes_total[2m])) / 1024 / 1024 > 40
+            for: 30m
+            labels:
+              component: node
+              alert_name: cluster-health-alert
+            annotations:
+              summary: "Node={{ $labels.kubernetes_node }} unusual network throughput receiving too much data (> 40 MB/s) , Current={{ $value }}"
+
+          - alert: Host40MBNetworkThroughputOut
+            expr: sum by (kubernetes_node) (irate(node_network_transmit_bytes_total[2m])) / 1024 / 1024 > 40
+            for: 30m
+            labels:
+              component: node
+              alert_name: cluster-health-alert
+            annotations:
+              summary: "Node={{ $labels.kubernetes_node }} Unusual network throughput out (> 40 MB/s) , Current={{ $value }}"
+
+          - alert: Host50MBDiskReadRate
+            expr: sum by (kubernetes_node) (irate(node_disk_read_bytes_total[2m])) / 1024 / 1024 > 50
+            for: 30m
+            labels:
+              component: node
+              alert_name: cluster-health-alert
+            annotations:
+              summary: "Node={{ $labels.kubernetes_node }} Unusual disk reading too much data (> 50 MB/s) rate , Current={{ $value }}"
+
+          - alert: Host50MBDiskWriteRate
+            expr: sum by (instance) (irate(node_disk_written_bytes_total[2m])) / 1024 / 1024 > 50
+            for: 30m
+            labels:
+              component: node
+              alert_name: cluster-health-alert
+            annotations:
+              summary: "Node={{ $labels.kubernetes_node }} writing too much data (> 50 MB/s) {{ $value }}"
+
+          - alert: HostRoot80%OfDiskSpaceFull
+            expr: (node_filesystem_avail_bytes{mountpoint="/"}  * 100) / node_filesystem_size_bytes{mountpoint="/"} < 20
+            for: 30m
+            labels:
+              component: node
+              alert_name: cluster-health-alert
+              pager: alert
+            annotations:
+              summary: "Node={{ $labels.kubernetes_node }} out of almost full (< 10% left) disk space , Current={{ $value }}"
+
+          - alert: HostDisktmpWillFillIn4Hours
+            expr: predict_linear(node_filesystem_free_bytes{fstype!~"tmpfs"}[1h], 4 * 3600) < 0
+            for: 60m
+            labels:
+              component: node
+              alert_name: cluster-health-alert
+            annotations:
+              summary: "Node={{ $labels.kubernetes_node }} Disk will fill in 4 hours , Current={{ $value }}"
+
+          - alert: HostOutOfInodes
+            expr: node_filesystem_files_free{mountpoint ="/rootfs"} / node_filesystem_files{mountpoint ="/rootfs"} * 100 < 10
+            for: 30m
+            labels:
+              component: node
+              alert_name: cluster-health-alert
+            annotations:
+              summary: "Node={{ $labels.kubernetes_node }} running out of available inodes (< 10% left) , Current={{ $value }}"
+
+          - alert: HostUnusualDiskReadLatency
+            expr: rate(node_disk_read_time_seconds_total[1m]) / rate(node_disk_reads_completed_total[1m]) > 100
+            for: 30m
+            labels:
+              component: node
+              alert_name: cluster-health-alert
+            annotations:
+              summary: "Node={{ $labels.kubernetes_node }} Disk latency is growing (read operations > 100ms), Current={{ $value }}"
+
+          - alert: HostUnusualDiskWriteLatency
+            expr: rate(node_disk_write_time_seconds_total[1m]) / rate(node_disk_writes_completed_total[1m]) > 100
+            for: 30m
+            labels:
+              component: node
+              alert_name: cluster-health-alert
+            annotations:
+              summary: "Node={{ $labels.kubernetes_node }} Disk latency is growing (write operations > 100ms), Current={{ $value }}"
+
+          - alert: HostHighCpuLoad>80
+            expr: 100 - (avg by(kubernetes_node) (irate(node_cpu_seconds_total{mode="idle"}[5m])) * 100) > 80
+            for: 30m
+            labels:
+              component: node
+              alert_name: cluster-health-alert
+              pager: alert
+            annotations:
+              summary: "Node={{ $labels.kubernetes_node }}, CPU load is > 80% , Current={{ $value }}"
+
+          - alert: HostSwapIs80%Filled
+            expr: (1 - (node_memory_SwapFree_bytes / node_memory_SwapTotal_bytes)) * 100 > 80
+            for: 30m
+            labels:
+              component: node
+              alert_name: cluster-health-alert
+            annotations:
+              summary: "Node={{ $labels.kubernetes_node }},Swap is filling up (>80%), Current={{ $value }}"
+
+          - alert: HostOomKillDetected
+            expr: increase(node_vmstat_oom_kill[5m]) > 0
+            for: 5m
+            labels:
+              component: node
+              alert_name: cluster-health-alert
+              pager: alert
+            annotations:
+              summary: "Node={{ $labels.kubernetes_node }}, OOM kill detected {{ $value }}"
+
+          - alert: NodeReady     # Kubernetes : kube-state-metrics
+            expr: kube_node_status_condition{condition="Ready",status="true"} == 0
+            for: 5m
+            labels:
+              component: node
+              alert_name: cluster-health-alert
+              pager: alert
+            annotations:
+              summary: "Node={{ $labels.node}} has been unready for a long time VALUE = {{ $value }}"
+
+          - alert: NodeMemorypressure
+            annotations:
+              summary: Node={{ $labels.node}} has MemoryPressure condition {{ $value }})
+            expr: kube_node_status_condition{condition="MemoryPressure",status="true"} == 1
+            for: 15m
+            labels:
+              component: node
+              alert_name: cluster-health-alert
+              pager: alert
+
+          - alert: NodeDiskpressure
+            annotations:
+              summary: Node={{ $labels.node}} has DiskPressure condition VALUE = {{ $value }})
+            expr: kube_node_status_condition{condition="DiskPressure",status="true"} == 1
+            for: 30m
+            labels:
+              component: node
+              alert_name: cluster-health-alert
+              pager: alert
+
+          - alert: NodeOutofdisk
+            annotations:
+              summary: Node={{ $labels.node}}, OutOfDisk condition VALUE = {{ $value }})
+            expr: kube_node_status_condition{condition="OutOfDisk",status="true"} == 1
+            for: 30m
+            labels:
+              component: node
+              alert_name: cluster-health-alert
+              pager: alert
+
+## Cronjob
+          - alert: JobFailed
+            annotations:
+              summary: Job={{$labels.job_name}} Failed in Namespace={{ $labels.namespace}}
+            expr: kube_job_status_failed > 0
+            for: 60m
+            labels:
+              component: job
+              alert_name: job-alert
+
+          - alert: CronjobSuspended
+            annotations:
+              summary: Cronjob={{$labels.cronjob}} Suspended in Namespace={{ $labels.namespace}}, VALUE = {{ $value }}
+            expr: kube_cronjob_spec_suspend != 0
+            for: 60m
+            labels:
+              component: job
+              alert_name: job-alert

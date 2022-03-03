@@ -1,0 +1,66 @@
+#!/usr/bin/env bash
+# shellcheck disable=SC1090,SC2005,SC2086,SC1091
+set -euo pipefail
+
+DIR="$( cd "$(dirname "$0")" ; pwd -P )"
+cd "$DIR/../"
+source "${DIR}"/vars  # Def vars for tooling
+
+amtool_route_test (){
+docker run -it \
+    --entrypoint=amtool \
+    -p 9093:9093 \
+    -v "$(pwd)"/prometheus_alertmanager_testing.yml:/prometheus_alertmanager_testing.yml  \
+    -v "$(pwd)"/prometheus_rules_testing.yml:/prometheus_rules_testing.yml  \
+    quay.io/prometheus/alertmanager config routes test  --config.file=/prometheus_alertmanager_testing.yml  \
+    "${@:-}"
+}
+
+amtool (){
+docker run -it \
+    --entrypoint=amtool \
+    -p 9093:9093 \
+    -v "$(pwd)"/prometheus_alertmanager_testing.yml:/prometheus_alertmanager_testing.yml  \
+    quay.io/prometheus/alertmanager \
+    "${@:-}"
+}
+
+promtool (){
+docker run -it \
+    --entrypoint=promtool \
+    -p 9093:9093 \
+    -v "$(pwd)"/prometheus_rules_testing.yml:/prometheus_rules_testing.yml  \
+    -v "$(pwd)"/prometheus_testing.yml:/prometheus_testing.yml  \
+    quay.io/prometheus/prometheus \
+    "${@:-}"
+}
+
+export ENVIRONMENT=${ENVIRONMENT:-"local"}
+sed -n '3,$p' ./prometheus/prometheus-alertmanager/alerting-rules-${ENVIRONMENT}.yaml | sed -e 's/^    //g' > ./prometheus_rules_testing.yml
+sed -n '3,$p' ./prometheus/prometheus-alertmanager/alertmanager-${ENVIRONMENT}.yaml | sed -e 's/^    //g' > ./prometheus_alertmanager_testing.yml
+sed -n '12,$p' ./prometheus/prometheus-${ENVIRONMENT}.yaml | sed -e 's/^    //g' > ./prometheus_testing.yml
+
+
+print "Prometheus Rules 👨‍🚀 "
+promtool check rules /prometheus_rules_testing.yml
+
+print "Prometheus Alert manager config,rules,receive 👨‍🚀"
+amtool  check-config /prometheus_alertmanager_testing.yml
+
+printg "Alert manager routes tree 👨‍🚀"
+amtool  config routes show --config.file=/prometheus_alertmanager_testing.yml
+
+printg "Pager Receiver Testing 📟 🚨 "
+amtool_route_test pager=alert alert_name=pod-alert alertname=ZeroReplicaDeployment deployment=".*deployment-a1.*"
+amtool_route_test pager=alert alert_name=pod-alert alertname=ZeroReplicaDeployment deployment=".*deployment-a2.*"
+amtool_route_test alert_name=job-alert alertname=KubernetesJobFailed job_name=".*agent-job.*"
+amtool_route_test alert_name=job-alert alertname=KubernetesJobFailed job_name=".*recommendation-job.*"
+amtool_route_test pager=alert alert_name=blackbox-alert alertname=BlackboxProbeHttpFailure instance=".*test.*"
+amtool_route_test pager=alert alert_name=blackbox-alert alertname=BlackboxProbeHttpFailure instance=".*abc.*"
+
+printg "Non-Pager Receiver Testing 🔎"
+amtool_route_test alert_name=blackbox-alert alertname=BlackboxProbeHttpFailure instance=".*dont-pager.*"
+amtool_route_test alert_name=job-alert alertname=KubernetesJobFailed job_name=".*noncritical-jobs.*"
+amtool_route_test alert_name=cluster-health-alert component=node
+
+printg "Prometheus Sample Routes Testing Done ✅ "

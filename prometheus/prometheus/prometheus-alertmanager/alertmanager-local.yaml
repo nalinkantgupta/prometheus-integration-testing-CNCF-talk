@@ -1,0 +1,127 @@
+alertmanagerFiles:
+  alertmanager.yml:
+    global:
+      slack_api_url: 'https://hooks.slack.com/services/T027TU47K/B01L1T2EGCF/ItK'
+    route:
+      group_by: ['alertname']
+      repeat_interval: 120m     ##wait before sending a notification again
+      group_wait: 5m          #How long to initially wait to send a notification for a group of alerts
+      group_interval: 30m      #wait before sending a notification about new alerts
+
+      receiver: "slack-alerts"
+      routes:
+
+####   Ignore List
+      - match_re:
+          alert_name: pod-alert                        ## POD & Deployment
+        receiver: slack-alerts
+        continue: true
+        routes:
+        - match_re:
+            alertname: PodHighMemory>99
+            pod: ^.*(fluentd-pod|agent-pod).*$
+          receiver: "dont-alert-receiver"
+        - match_re:
+            alertname: ZeroReplicaDeployment
+            deployment: ^.*(deployment-a1).*$
+          receiver: "pager-alert-deployment-a1"
+        - match_re:
+            alertname: ZeroReplicaDeployment
+            deployment: ^.*(deployment-a2).*$
+          receiver: "pager-alert-deployment-a2"
+
+      - match_re:
+          alert_name: job-alert                        ## Job & Cron
+        receiver: slack-alerts
+        continue: true
+        routes:
+        - match_re:
+            job_name: ^.*(agent-job).*$
+            alertname: KubernetesJobFailed
+          receiver: "pager-alert-agentjob"
+        - match_re:
+            job_name: ^.*(recommendation-job).*$
+            alertname: KubernetesJobFailed
+          receiver: "pager-alert-recommendationjob"
+        - match_re:
+            job_name: ^.*(noncritical-jobs).*$
+            alertname: KubernetesJobFailed
+          receiver: "no-alert-noncriticaljob"
+
+      - match:
+          alert_name: prometheus-alert       ## Prometheus
+        receiver: slack-cluster-alerts
+        continue: true
+        routes:
+        - match_re:
+            pager: alert
+          receiver: blank-pager-receiver
+        - match_re:
+            kubernetes_name: prom-metrics-service-tester
+            alertname: PrometheusTargetMissing
+          receiver: "dont-alert-receiver"
+
+      - match:
+          alert_name: cluster-health-alert        ## Cluster & Host
+          component: node
+        receiver: slack-cluster-alerts
+        continue: true
+        routes:
+        - match_re:
+            job_name: ^.*(xyz).*$
+          receiver: "dont-alert-receiver"
+
+      - match:
+          alert_name: blackbox-alert
+          alertname: BlackboxProbeHttpFailure
+        continue: true
+        routes:
+        - match_re:
+            instance: ^.*(test).*$              ## api template
+            pager: alert
+          receiver: "test-pager"
+        - match_re:
+            instance: ^.*(abc).*$                 ## new agency reporting download api in AWS
+            pager: alert
+          receiver: abc-pager
+
+
+    receivers:
+    - name: "slack-alerts"
+      slack_configs:
+      - channel: '#service-alerts'
+        send_resolved: true
+        icon_url: https://avatars3.githubusercontent.com/u/3380462
+        title: |-
+          [{{ .Status | toUpper }}{{ if eq .Status "firing" }}:{{ .Alerts.Firing | len }}{{ end }}] {{ .CommonLabels.alertname }}
+        text: >-
+          {{ range .Alerts -}}
+          *Alert:* {{ .Annotations.title }}{{ if .Labels.component }} - `{{ .Labels.component }}`{{ end }}
+          *Description:* {{ .Annotations.summary }}
+          *Details:*
+            {{ range .Labels.SortedPairs }} • *{{ .Name }}:* `{{ .Value }}`
+            {{ end }}
+          {{ end }}
+        footer: '{{ template "slack.default.footer" . }}'
+        fallback: '{{ template "slack.default.fallback" . }}'
+        callback_id: '{{ template "slack.default.callbackid" . }}'
+        icon_emoji: '{{ template "slack.default.iconemoji" . }}'
+
+
+    ## dont-alert-receiver
+    - name: "slack-cluster-alerts"
+    - name: "dont-alert-receiver"
+    - name: "blank-pager-receiver"
+    - name: "pager-alert-deployment-a2"
+    - name: "pager-alert-agentjob"
+    - name: "pager-alert-recommendationjob"
+    - name: "no-alert-noncriticaljob"
+    - name: "pager-alert-deployment-a1"
+      pagerduty_configs:
+      - service_key: 32f
+    - name: "test-pager"
+      pagerduty_configs:
+      - service_key: 32f
+    - name: "abc-pager"
+      pagerduty_configs:
+      - service_key: a8e
