@@ -1,7 +1,7 @@
 alertmanagerFiles:
   alertmanager.yml:
     global:
-      slack_api_url: 'https://hooks.slack.com/services/T027TU47K/B01L1T2EGCF/ItK'
+      slack_api_url: 'https://hooks.slack.com/services/T027TU47K/B01L1T2EGCF/1234'
     route:
       group_by: ['alertname']
       repeat_interval: 120m     ##wait before sending a notification again
